@@ -1,0 +1,95 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// How a watched town decides a listing is "underpriced". Exactly one mode
+// applies per watched town, matching the three options from the spec.
+enum UnderpriceMode {
+  PCT_BELOW_MEDIAN_PPSF // flag if list $/sqft is X% below the town's median sold $/sqft
+  FLAT_PRICE_THRESHOLD // flag if list price is below a flat dollar amount
+  PRICE_DROP_PCT // flag if the listing has dropped X% or more from its original list price
+}
+
+// A town or zip code the user is watching.
+model WatchedTown {
+  id              String   @id @default(cuid())
+  // Empty string means "not set" rather than NULL, so the unique
+  // constraint below actually catches duplicates - Postgres composite
+  // unique constraints don't treat two NULLs as equal.
+  town            String   @default("")
+  zip             String   @default("")
+  state           String   @default("NJ")
+  minPrice        Int      @default(1000000)
+  underpriceMode  UnderpriceMode @default(PCT_BELOW_MEDIAN_PPSF)
+  underpriceValue Float    @default(10)
+  createdAt       DateTime @default(now())
+
+  listingRecords ListingRecord[]
+  listingEvents  ListingEvent[]
+
+  @@unique([town, zip])
+}
+
+// The latest known state of one active listing in a watched town, used to
+// detect what changed (new / price drop) on the next scheduled check.
+model ListingRecord {
+  id                String      @id @default(cuid())
+  watchedTownId     String
+  watchedTown       WatchedTown @relation(fields: [watchedTownId], references: [id], onDelete: Cascade)
+  externalId        String // id from the data provider
+  address           String
+  town              String
+  zip               String
+  listPrice         Int
+  originalListPrice Int
+  status            String
+  daysOnMarket      Int
+  beds              Int
+  baths             Int
+  sqft              Int
+  pricePerSqft      Int
+  photos            String[]
+  firstSeenAt       DateTime    @default(now())
+  lastSeenAt        DateTime    @updatedAt
+
+  @@unique([watchedTownId, externalId])
+}
+
+enum ListingEventType {
+  NEW_LISTING
+  PRICE_DROP
+  UNDERPRICED
+}
+
+// An append-only log of things worth showing on the dashboard: a listing
+// showed up for the first time, dropped in price, or was flagged as
+// underpriced. Denormalized so the dashboard can render straight from here.
+model ListingEvent {
+  id            String           @id @default(cuid())
+  watchedTownId String
+  watchedTown   WatchedTown      @relation(fields: [watchedTownId], references: [id], onDelete: Cascade)
+  externalId    String
+  eventType     ListingEventType
+  occurredAt    DateTime         @default(now())
+
+  address       String
+  town          String
+  zip           String
+  listPrice     Int
+  previousPrice Int?
+  beds          Int
+  baths         Int
+  sqft          Int
+  pricePerSqft  Int
+  photos        String[]
+
+  @@index([watchedTownId, occurredAt])
+}
